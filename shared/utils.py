@@ -24,8 +24,8 @@ def send_code_to_email(email, code):
 
 def send_code_to_phone(phone_number, code):
     def send_in_thread():
-        account_sid = 'AC35e4b4b1654fc26354adab63e12ca90a'
-        auth_token = '4f884ad66e553812b27cdbb903324f4a'
+        account_sid = config('TWILIO_ID')
+        auth_token = config('TWILIO_KEY')
         client = Client(account_sid, auth_token)
 
         verification_check = client.verify \
