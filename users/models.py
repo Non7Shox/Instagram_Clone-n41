@@ -1,12 +1,13 @@
-import random
 import uuid
 from datetime import timedelta
-from django.contrib.auth.models import AbstractUser
-from django.db import models
+import random
+
+from django.contrib.auth.models import AbstractUser, User
 from django.utils import timezone
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from shared.models import BaseModel
+from django.db import models
 
 VIA_EMAIL, VIA_PHONE = "VIA_EMAIL", "VIA_PHONE"
 ORDINARY_USER, MANAGER, ADMIN = "ORDINARY_USER", "MANAGER", "ADMIN"
@@ -16,28 +17,28 @@ NEW, CODE_VERIFIED, DONE, PHOTO = "NEW", "CODE_VERIFIED", "DONE", "PHOTO"
 class UserModel(AbstractUser, BaseModel):
     AUTH_TYPES = (
         (VIA_EMAIL, VIA_EMAIL),
-        (VIA_PHONE, VIA_PHONE),
+        (VIA_PHONE, VIA_PHONE)
     )
 
     AUTH_STATUSES = (
         (NEW, NEW),
         (CODE_VERIFIED, CODE_VERIFIED),
         (DONE, DONE),
-        (PHOTO, PHOTO),
+        (PHOTO, PHOTO)
     )
 
     USER_ROLES = (
         (ADMIN, ADMIN),
         (MANAGER, MANAGER),
-        (ORDINARY_USER, ORDINARY_USER),
+        (ORDINARY_USER, ORDINARY_USER)
     )
 
     auth_type = models.CharField(max_length=128, choices=AUTH_TYPES, default=VIA_EMAIL)
     auth_status = models.CharField(max_length=128, choices=AUTH_STATUSES, default=NEW)
     user_role = models.CharField(max_length=128, choices=USER_ROLES, default=ORDINARY_USER)
 
-    email = models.EmailField(null=True, unique=True)
-    phone_number = models.CharField(max_length=13, null=True, unique=True)
+    email = models.EmailField(null=True, blank=True)
+    phone_number = models.CharField(max_length=13, null=True, blank=True)
     bio = models.TextField(null=True, blank=True)
     avatar = models.ImageField(upload_to='avatars', null=True, blank=True)
 
@@ -59,63 +60,62 @@ class UserModel(AbstractUser, BaseModel):
         if self.password:
             self.password = f"password-{uuid.uuid4()}"
 
+    def check_email(self):
+        self.email = str(self.email).lower()
+
     def hashing_password(self):
         if not self.password.startswith('pbkdf2_sha256'):
             self.set_password(self.password)
 
-    def check_email(self):
-        self.email = str(self.email).lower()
-
     def clean(self):
-        self.check_email()
-        self.check_pass()
         self.check_username()
+        self.check_pass()
+        self.check_email()
         self.hashing_password()
 
     def save(self, *args, **kwargs):
         if not self.pk:
-            self.is_active = False
             self.clean()
         super(UserModel, self).save(*args, **kwargs)
 
     def create_verify_code(self, verify_type):
-        code = "".join([str(random.randint(1, 10) % 10) for _ in range(4)])
-
+        code = "".join([str(random.randint(1, 100) % 10) for _ in range(4)])
         ConfirmationModel.objects.create(
             code=code,
-            verify_type=verify_type,
             user=self,
+            verify_type=verify_type
         )
         return code
 
     def token(self):
         refresh = RefreshToken.for_user(self)
         response = {
-            'refresh_token': str(refresh.refresh_token),
-            'access_token': str(refresh)
+            'access_token': str(refresh.access_token),
+            'refresh_token': str(refresh)
         }
         return response
 
 
 EMAIL_EXPIRATION_TIME = 4
-PHONE_EXPIRATION_TIME = 4
+PHONE_EXPIRATION_TIME = 2
 
 
 class ConfirmationModel(BaseModel):
     VERIFY_TYPES = (
         (VIA_EMAIL, VIA_EMAIL),
-        (VIA_PHONE, VIA_PHONE),
+        (VIA_PHONE, VIA_PHONE)
     )
 
     verify_type = models.CharField(max_length=128, choices=VERIFY_TYPES, default=VIA_EMAIL)
-    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, related_name='confirmations')
-    expiration_date = models.DateField()
+    user = models.ForeignKey(UserModel, on_delete=models.CASCADE, related_name='verification_codes')
+    expiration_time = models.DateField()
     is_confirmed = models.BooleanField(default=False)
+    code = models.CharField(max_length=4, default=0000)
 
     def save(self, *args, **kwargs):
         if not self.pk:
             if self.verify_type == VIA_EMAIL:
-                self.expiration_date = timezone.now() + timedelta(minutes=EMAIL_EXPIRATION_TIME)
+                self.expiration_time = timezone.now() + timedelta(minutes=EMAIL_EXPIRATION_TIME)
             else:
-                self.expiration_date = timezone.now() + timedelta(minutes=PHONE_EXPIRATION_TIME)
+                self.expiration_time = timezone.now() + timedelta(minutes=PHONE_EXPIRATION_TIME)
         super(ConfirmationModel, self).save(*args, **kwargs)
