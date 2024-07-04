@@ -2,11 +2,16 @@ from rest_framework import generics, status
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
-from users.models import UserModel, ConfirmationModel, CODE_VERIFIED, DONE, PHOTO
+from shared.utils import send_code_to_email, send_code_to_phone
+from users.models import UserModel, ConfirmationModel, CODE_VERIFIED, DONE, PHOTO, VIA_EMAIL, VIA_PHONE
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
-from users.serializers import SignUpSerializer, UpdateUserSerializer, UserAvatarSerializer
+from users.serializers import SignUpSerializer, UpdateUserSerializer, UpdateAvatarSerializer, LoginSerializer, \
+    LogoutSerializer, ForgetPasswordSerializer
 
 
 class SignUpCreateAPIView(generics.CreateAPIView):
@@ -15,7 +20,7 @@ class SignUpCreateAPIView(generics.CreateAPIView):
     model = UserModel
 
 
-class VerifyCodeAPIView(APIView):
+class CodeVerifyAPIView(generics.CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
@@ -23,78 +28,157 @@ class VerifyCodeAPIView(APIView):
         code = request.data.get('code')
 
         verification_code = ConfirmationModel.objects.filter(
-            user_id=user.id, code=code, is_confirmed=False, expiration_time__gte=timezone.now())
-        if verification_code.exists():
-            user.auth_status = CODE_VERIFIED
-            user.save()
-
-            verification_code.update(is_confirmed=True)
-
+            code=code, is_confirmed=False, user_id=user.id,
+            expiration_time__gte=timezone.now()
+        )
+        if not verification_code.exists():
             response = {
-                'success': True,
-                'message': "Your code is successfully verified.",
-                'auth_status': CODE_VERIFIED,
-                'access_token': user.tokens()['access_token']
+                "success": False,
+                "message": "Code verification failed.",
+            }
+            return Response(response, status=status.HTTP_400_BAD_REQUEST)
+
+        ConfirmationModel.objects.update(is_confirmed=True)
+
+        user.auth_status = CODE_VERIFIED
+        user.save()
+
+        response = {
+            "success": True,
+            "message": "Code verified successfully.",
+            "auth_status": user.auth_status
+        }
+        return Response(response, status=status.HTTP_200_OK)
+
+
+class ResendCodeVerifyAPIView(generics.CreateAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        user = self.request.user
+
+        verification_code = ConfirmationModel.objects.filter(is_confirmed=False, user_id=user.id, expiration_time__gte=timezone.now())
+        if verification_code.exists():
+            response = {
+                "success": False,
+                "message": "You have already confirmed a code.",
+            }
+            return Response(response, status=status.HTTP_400_BAD_REQUEST)
+
+        self.send_code()
+        response = {
+            "success": True,
+            "message": "New code is sent",
+            "auth_status": user.auth_status
+        }
+        return Response(response, status=status.HTTP_200_OK)
+
+    def send_code(self):
+        user = self.request.user
+        new_code = user.create_verify_code(verify_type=user.auth_type)
+        if user.auth_type == VIA_EMAIL:
+            send_code_to_email(user.email, new_code)
+        else:
+            send_code_to_phone(user.phone, new_code)
+
+
+class UpdateUserAPIView(generics.UpdateAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UpdateUserSerializer
+    http_method_names = ['put', 'patch']
+
+    def get_object(self):
+        return self.request.user
+
+    def update(self, request, *args, **kwargs):
+        super(UpdateUserAPIView, self).update(request, *args, **kwargs)
+        response = {
+            "success": True,
+            "message": "User updated successfully",
+            "auth_status": self.request.user.auth_status
+        }
+        return Response(response, status=status.HTTP_202_ACCEPTED)
+
+    def partial_update(self, request, *args, **kwargs):
+        super(UpdateUserAPIView, self).partial_update(request, *args, **kwargs)
+        response = {
+            "success": True,
+            "message": "User updated successfully"
+        }
+        return Response(response, status=status.HTTP_202_ACCEPTED)
+
+
+class UpdateAvatarApiView(APIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UpdateAvatarSerializer
+
+    def put(self, request, *args, **kwargs):
+        serializer = self.serializer_class(data=request.data)
+        if serializer.is_valid():
+            user = self.request.user
+            serializer = UpdateAvatarSerializer(user, serializer.validated_data)
+            response = {
+                "success": True,
+                "message": "Avatar updated successfully",
+            }
+            return Response(response, status=status.HTTP_202_ACCEPTED)
+
+        else:
+            response = {
+                "success": False,
+                "message": "Invalid data",
+            }
+            return Response(response, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LoginView(TokenObtainPairView):
+    serializer_class = LoginSerializer
+
+
+class LogoutView(APIView):
+    serializer_class = LogoutSerializer
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        refresh = self.request.data['refresh']
+        token = RefreshToken(token=refresh)
+        token.blacklist()
+        response = {
+            "success": True,
+            "message": "Logged out successfully",
+        }
+        return Response(response, status=status.HTTP_200_OK)
+
+
+class RefreshTokenView(TokenRefreshView):
+    serializer_class = TokenRefreshSerializer
+
+
+class ForgetPasswordView(APIView):
+    permission_classes = [AllowAny]
+    serializer_class = ForgetPasswordSerializer
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.serializer_class(data=request.data)
+        if serializer.is_valid():
+            email_phone_number = serializer.validated_data.get('email_phone_number')
+            user = serializer.validated_data.get('user')
+
+            if email_phone_number.endswith('@gmail.com'):
+                new_code = user.create_verify_code(VIA_EMAIL)
+                send_code_to_email(user.email, new_code)
+            else:
+                new_code = user.create_verify_code(VIA_PHONE)
+                send_code_to_phone(user.phone_number, new_code)
+            response = {
+                "success": True,
+                "message": "Code sent successfully",
+                "access_token": user.token()['access_token']
             }
             return Response(response, status=status.HTTP_200_OK)
         else:
             response = {
-                'success': False,
-                'message': "Your code is invalid or already expired"
-            }
-            return Response(response, status=status.HTTP_400_BAD_REQUEST)
-
-
-class UpdateUserAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def put(self, request, *args, **kwargs):
-        user = self.request.user
-        serializer = UpdateUserSerializer(data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.update(user, serializer.validated_data)
-            user.auth_status = DONE
-            user.save()
-
-            response = {
-                "success": True,
-                "message": "Updated successfully",
-                "auth_status": DONE,
-                "access_token": user.tokens()['access_token'],
-                "refresh_token": user.tokens()['refresh_token']
-            }
-            return Response(response, status=status.HTTP_202_ACCEPTED)
-        else:
-            response = {
                 "success": False,
-                "message": "Invalid request body",
-                "errors": serializer.errors
-            }
-            return Response(response, status=status.HTTP_400_BAD_REQUEST)
-
-
-class UpdateUserAvatarAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def put(self, request, *args, **kwargs):
-        user = self.request.user
-        serializer = UserAvatarSerializer(data=request.data)
-
-        if serializer.is_valid():
-            serializer.update(user, serializer.validated_data)
-            user.auth_status = PHOTO
-            user.save()
-
-            response = {
-                "success": True,
-                "message": "Updated successfully",
-                "auth_status": PHOTO,
-            }
-            return Response(response, status=status.HTTP_202_ACCEPTED)
-        else:
-            response = {
-                "success": False,
-                "message": "Invalid request",
-                "errors": serializer.errors
+                "message": "Invalid data",
             }
             return Response(response, status=status.HTTP_400_BAD_REQUEST)

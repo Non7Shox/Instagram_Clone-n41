@@ -28,8 +28,7 @@ INSTALLED_APPS = [
     # my apps
     'users',
     'shared',
-    'likeandcomments',
-    'post',
+    'postslikesandcomments',
 ]
 
 MIDDLEWARE = [
@@ -65,11 +64,7 @@ WSGI_APPLICATION = 'config.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': config('DB_NAME'),
-        'PORT': config('DB_PORT'),
-        'HOST': config('DB_HOST'),
-        'PASSWORD': config('DB_PASS'),
-        'USER': config('DB_USER'),
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
 
@@ -98,8 +93,8 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
-MEDIA_URL = 'media/'
-MEDIA_ROOT = os.path.join(BASE_DIR, 'media/')
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'users.UserModel'
@@ -110,6 +105,7 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework.authentication.TokenAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     )
 }
 
@@ -122,7 +118,7 @@ EMAIL_HOST_PASSWORD = config('EMAIL_PASS')
 
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(days=1),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=90),
     "ROTATE_REFRESH_TOKENS": False,
     "BLACKLIST_AFTER_ROTATION": False,
     "UPDATE_LAST_LOGIN": False,
